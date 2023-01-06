@@ -9,6 +9,7 @@
 #pragma multi_compile _ _SHADOWS_SOFT
 #pragma multi_compile _ _ADDITIONAL_LIGHTS
 #pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
+#pragma multi_compile _ _LIGHTMAP_SHADOW_MIXING
 
 
 struct CustomLightingData {
@@ -21,6 +22,10 @@ struct CustomLightingData {
     // Surface attributes
     float3 albedo;
     float smoothness;
+    float ambientOcclusion;
+
+    //baked lighting
+    float3 bakedGI;
 };
 
 //Translate a [0 , 1] smoothness value to an exponent
@@ -29,6 +34,11 @@ float GetSmoothnessPower(float rawSmoothness) {
 }
 
 #ifndef SHADERGRAPH_PREVIEW
+float3 CustomGlobalIllumination(CustomLightingData d) {
+    float3 indirectDiffuse = d.albedo * d.bakedGI * d.ambientOcclusion;
+    return indirectDiffuse;
+}
+
 float3 CustomLightHandling(CustomLightingData d, Light light) {
 
     float3 radiance = light.color * (light.distanceAttenuation * light.shadowAttenuation);
@@ -56,11 +66,13 @@ float3 CalculateCustomLighting(CustomLightingData d) {
 
     //Get main light
     Light mainLight = GetMainLight(d.shadowCoord, d.positionWS, 1);
-
-    float3 color = 0;
-    //shade main light
+    // In mixed subtractive baked lights, the main light must be subtracted
+    // from the bakedGI value. This function in URP/ShaderLibrary/Lighting.hlsl takes care of that.
+    MixRealtimeAndBakedGI(mainLight, d.normalWS, d.bakedGI);
+    float3 color = CustomGlobalIllumination(d);
+    // Shade the main light
     color += CustomLightHandling(d, mainLight);
-
+    
     #ifdef _ADDITIONAL_LIGHTS
         //shade additional cone and point lights
         uint numAdditionalLights = GetAdditionalLightsCount();
@@ -68,13 +80,14 @@ float3 CalculateCustomLighting(CustomLightingData d) {
         Light light = GetAdditionalLight(lightI, d.positionWS, 1);
         color += CustomLightHandling(d, light);
         }
-    #endif
+#endif
 
     return color;
 #endif
 }
 
 void CalculateCustomLighting_float(float3 Position, float3 Normal, float3 ViewDirection, float3 Albedo, float Smoothness,
+    float AmbientOcclusion, float2 LightmapUV,
     out float3 Color) {
 
     CustomLightingData d;
@@ -83,10 +96,12 @@ void CalculateCustomLighting_float(float3 Position, float3 Normal, float3 ViewDi
     d.viewDirectionWS = ViewDirection;
     d.albedo = Albedo;
     d.smoothness = Smoothness;
+    d.ambientOcclusion = AmbientOcclusion;
 
 #ifdef SHADERGRAPH_PREVIEW
     // In preview, there's no shadows for bakedGI
     d.shadowCoord = 0;
+    d.bakedGI = 0;
 #else
     //Calculate the main light shadow coord
     //there are two types depending on if cascades are enabled
@@ -96,6 +111,16 @@ void CalculateCustomLighting_float(float3 Position, float3 Normal, float3 ViewDi
     #else
         d.shadowCoord = TransformWorldToShadowCoord(Position);
     #endif
+
+        // The lightmap UV is usually in TEXCOORD1
+        // If lightmaps are disabled, OUTPUT_LIGHTMAP_UV does nothing
+        float3 lightmapUV;
+        OUTPUT_LIGHTMAP_UV(LightmapUV, unity_LightmapST, lightmapUV);
+        // Samples spherical harmonics, which encode light probe data
+        float3 vertexSH;
+        OUTPUT_SH(Normal, vertexSH);
+        // This function calculates the final baked lighting from light maps or probes
+        d.bakedGI = SAMPLE_GI(lightmapUV, vertexSH, Normal);
 #endif
 
     Color = CalculateCustomLighting(d);
