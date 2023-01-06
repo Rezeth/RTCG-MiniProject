@@ -31,7 +31,7 @@ float GetSmoothnessPower(float rawSmoothness) {
 #ifndef SHADERGRAPH_PREVIEW
 float3 CustomLightHandling(CustomLightingData d, Light light) {
 
-    float3 radiance = light.color * light.shadowAttenuation;
+    float3 radiance = light.color * (light.distanceAttenuation * light.shadowAttenuation);
 
     float diffuse = saturate(dot(d.normalWS, light.direction));
     float specularDot = saturate(dot(d.normalWS, normalize(light.direction + d.viewDirectionWS)));
@@ -53,13 +53,22 @@ float3 CalculateCustomLighting(CustomLightingData d) {
     return d.albedo * intensity;
 
 #else
-    
+
     //Get main light
     Light mainLight = GetMainLight(d.shadowCoord, d.positionWS, 1);
 
     float3 color = 0;
     //shade main light
     color += CustomLightHandling(d, mainLight);
+
+    #ifdef _ADDITIONAL_LIGHTS
+        //shade additional cone and point lights
+        uint numAdditionalLights = GetAdditionalLightsCount();
+        for (uint lightI = 0; lightI < numAdditionalLights; lightI++) {
+        Light light = GetAdditionalLight(lightI, d.positionWS, 1);
+        color += CustomLightHandling(d, light);
+        }
+    #endif
 
     return color;
 #endif
